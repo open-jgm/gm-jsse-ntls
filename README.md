@@ -1,147 +1,397 @@
 English | [简体中文](./README-CN.md)
 
-# GM JSSE
+# gm-jsse-ntls
 
-<p align="center">
-<a href="https://search.maven.org/search?q=g:%22com.aliyun%22%20AND%20a:%22gmsse%22"><img src="https://img.shields.io/maven-central/v/com.aliyun/gmsse.svg?label=Maven%20Central" alt="Latest Stable Version"/></a>
-<a href="https://github.com/aliyun/gm-jsse/actions/workflows/maven.yml"><img src="https://github.com/aliyun/gm-jsse/actions/workflows/maven.yml/badge.svg" alt="Java CI with Maven"/></a>
-<a href="https://ci.appveyor.com/project/JacksonTian/alibabacloud-gm-jsse/branch/master"><img src="https://ci.appveyor.com/api/projects/status/7xwn4tw8gcl86im5/branch/master?svg=true"/></a>
-<a href="https://codecov.io/gh/aliyun/gm-jsse"><img src="https://codecov.io/gh/aliyun/gm-jsse/branch/master/graph/badge.svg"/></a>
-</p>
+Open GM JSSE (NTLS / GMSSL) for Java: `SSLContext`, blocking `SSLSocket` / `SSLServerSocket`, and `SSLEngine` (e.g. Netty).
 
 ## Requirements
 
-- JDK 1.7 or later.
+- **JDK 8+** to run.
+- **BouncyCastle** on the classpath (`bcpkix-jdk15to18` is **provided**; your app must supply BC, typically 1.76+).
+- Compile with JDK 8, or JDK 17+ with Maven `--release 8`.
 
 ## Installation
 
 ```xml
 <dependency>
-    <groupId>com.aliyun</groupId>
-    <artifactId>gmsse</artifactId>
-    <version>{{see the version on the badge}}</version>
+    <groupId>com.open.jgm</groupId>
+    <artifactId>gm-jsse-ntls</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>org.bouncycastle</groupId>
+    <artifactId>bcpkix-jdk15to18</artifactId>
+    <version>1.76</version>
 </dependency>
 ```
 
-## Usage
+Register providers once at startup:
 
 ```java
+import com.open.jgm.jsse.GmSslProviders;
+
+GmSslProviders.ensureInstalled();
+```
+
+## Algorithm names
+
+| API | Algorithm string |
+|-----|------------------|
+| `TrustManagerFactory` + `GMProvider` | **`X509`** |
+| `CertificateFactory` + BouncyCastle | **`X.509`** |
+
+Cipher suite (enable explicitly when needed): `CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()` → `ECC-SM2-WITH-SM4-CBC-SM3`. Protocol: **NTLSv1.1**.
+
+**Session resumption:** not supported.
+
+---
+
+## 1. GMSSL / NTLS over HTTPS (`https://xxx/`)
+
+Replace `https://xxx/` with your GMSSL-enabled endpoint. The server must speak **NTLS**, not standard TLS 1.2.
+
+### 1.1 One-way authentication (client verifies server)
+
+Client trusts the server CA; no client certificate.
+
+#### With `JsseSimpleUtil`
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
 import java.net.URL;
 
-import com.aliyun.gmsse.GMProvider;
-
-public class Main {
-
+public class GmHttpsOneWayUtil {
     public static void main(String[] args) throws Exception {
-        // init SSLSocketFactory
-        GMProvider provider = new GMProvider();
-        SSLContext sc = SSLContext.getInstance("TLS", provider);
-        sc.init(null, null, null);
-        SSLSocketFactory ssf = sc.getSocketFactory();
+        GmSslProviders.ensureInstalled();
+        SSLContext ctx = JsseSimpleUtil.createAuthClientSSLContext("/path/to/ca.pem", false);
 
-        URL serverUrl = new URL("https://xxx/");
-        HttpsURLConnection conn = (HttpsURLConnection) serverUrl.openConnection();
-        conn.setRequestMethod("GET");
-        // set SSLSocketFactory
-        conn.setSSLSocketFactory(ssf);
+        URL url = new URL("https://xxx/");
+        HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.setHostnameVerifier((h, s) -> true); // replace with real host verification in production
         conn.connect();
-        System.out.println("used cipher suite:");
+        System.out.println("cipher=" + conn.getCipherSuite());
+        conn.getInputStream().close();
+    }
+}
+```
+
+#### Without `JsseSimpleUtil` (manual trust store)
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GMProvider;
+import com.open.jgm.jsse.GmSslProviders;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
+import java.net.URL;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+
+public class GmHttpsOneWayManual {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        GMProvider gm = GmSslProviders.gmProvider();
+        BouncyCastleProvider bc = new BouncyCastleProvider();
+
+        KeyStore trust = KeyStore.getInstance("PKCS12", bc);
+        trust.load(null, null);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509", bc);
+        try (FileInputStream caIn = new FileInputStream("/path/to/ca.pem")) {
+            trust.setCertificateEntry("ca", (X509Certificate) cf.generateCertificate(caIn));
+        }
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", gm);
+        tmf.init(trust);
+
+        SSLContext ctx = SSLContext.getInstance("TLS", gm);
+        ctx.init(null, tmf.getTrustManagers(), null);
+
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.connect();
         System.out.println(conn.getCipherSuite());
     }
 }
 ```
 
-In the new version, GM-JSSE will verify server and CA certificates, if the CA root certificates are not imported in system, maybe have verfication errors. So you need add trust manager with CA certificates.
+### 1.2 Mutual authentication (two-way, SM2 dual-cert)
+
+Client presents sign + encryption keys (typically one PKCS#12 with `Sig` / `Enc` entries or separate files).
+
+#### With `JsseSimpleUtil`
 
 ```java
-    BouncyCastleProvider bc = new BouncyCastleProvider();
-    KeyStore ks = KeyStore.getInstance("JKS");
-    CertificateFactory cf = CertificateFactory.getInstance("X.509", bc);
-    FileInputStream is = new FileInputStream("/path/to/ca_cert");
-    X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
-    ks.load(null, null);
-    ks.setCertificateEntry("gmca", cert);
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
 
-    TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", provider);
-    tmf.init(ks);
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import java.net.URL;
 
-    sc.init(null, tmf.getTrustManagers(), null);
-    SSLSocketFactory ssf = sc.getSocketFactory();
+public class GmHttpsMutualUtil {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        // Single dual-cert PFX (aliases Sig/Enc inside) + CA PEM
+        SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+                "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.connect();
+        System.out.println(conn.getCipherSuite());
+    }
+}
 ```
 
-### Two-way Authentication
-
-In two-way authentication, the client needs to pass in two certificates.
+Separate sign/enc PFX files:
 
 ```java
+SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/sign.pfx", "signPwd",
+        "/path/to/enc.pfx", "encPwd",
+        "/path/to/ca.pem");
+```
 
-    public static X509Certificate loadCertificate(String path) throws KeyStoreException, CertificateException, FileNotFoundException {
+#### Without `JsseSimpleUtil` (manual KeyStore)
+
+SM2 client key entries must use aliases **`sign`** and **`enc`** (see `JsseSimpleUtil` / `GMX509KeyManager`).
+
+```java
+import com.open.jgm.jsse.GMProvider;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil; // only for loading cert/key from PFX if you prefer
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.net.URL;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
+
+public class GmHttpsMutualManual {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        GMProvider gm = GmSslProviders.gmProvider();
         BouncyCastleProvider bc = new BouncyCastleProvider();
-        CertificateFactory cf = CertificateFactory.getInstance("X.509", bc);
-        InputStream is = Server.class.getClassLoader().getResourceAsStream(path);
-        X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
-        return cert;
+
+        String pfx = "/path/to/client.both.pfx";
+        String pwd = "password";
+        String ca = "/path/to/ca.pem";
+
+        KeyStore ks = KeyStore.getInstance("PKCS12", bc);
+        ks.load(null, null);
+        ks.setKeyEntry("enc",
+                JsseSimpleUtil.getP12PrivateKey("Enc", pfx, pwd), new char[0],
+                new X509Certificate[]{JsseSimpleUtil.getP12Certificate("Enc", pfx, pwd)});
+        ks.setKeyEntry("sign",
+                JsseSimpleUtil.getP12PrivateKey("Sig", pfx, pwd), new char[0],
+                new X509Certificate[]{JsseSimpleUtil.getP12Certificate("Sig", pfx, pwd)});
+        ks.setCertificateEntry("ca", JsseSimpleUtil.findCaCertificate(ca));
+
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
+        kmf.init(ks, pwd.toCharArray());
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", gm);
+        tmf.init(ks);
+
+        SSLContext ctx = SSLContext.getInstance("TLS", gm);
+        ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.connect();
     }
-
-    public static PrivateKey loadPrivateKey(String path) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException {
-        InputStream is = Server.class.getClassLoader().getResourceAsStream(path);
-        InputStreamReader inputStreamReader = new InputStreamReader(is);
-        BufferedReader bufferedReader = new BufferedReader(inputStreamReader);
-        StringBuilder sb = new StringBuilder();
-        String line = null;
-            while ((line = bufferedReader.readLine()) != null){
-            if (line.startsWith("-")){
-                continue;
-            }
-            sb.append(line).append("\n");
-        }
-        String ecKey = sb.toString().replaceAll("\\r\\n|\\r|\\n", "");
-        Base64.Decoder base64Decoder = Base64.getDecoder();
-        byte[] keyByte = base64Decoder.decode(ecKey.getBytes(StandardCharsets.UTF_8));
-        PKCS8EncodedKeySpec eks2 = new PKCS8EncodedKeySpec(keyByte);
-        KeyFactory keyFactory = KeyFactory.getInstance("EC", new BouncyCastleProvider());
-        PrivateKey privateKey = keyFactory.generatePrivate(eks2);
-        return privateKey;
-    }
-
-    KeyStore ks = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
-    ks.load(null, null);
-
-    // 传入签名证书
-    ks.setKeyEntry("sign", loadPrivateKey("sm2/client_sign.key"), new char[0], new X509Certificate[] {
-        loadCertificate("sm2/client_sign.crt")
-    });
-    // 传入加密证书
-    ks.setKeyEntry("enc", Server.loadPrivateKey("sm2/client_enc.key"), new char[0], new X509Certificate[] {
-        oadCertificate("sm2/client_enc.crt")
-    });
-
-    KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-    kmf.init(ks, new char[0]);
-
-    // 传入根证书
-    ks.setCertificateEntry("gmca", loadCertificate("sm2/chain-ca.crt"));
-
-    TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", provider);
-    tmf.init(ks);
-
-    sc.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-    SSLSocketFactory ssf = sc.getSocketFactory();
+}
 ```
 
-## Issues
+To avoid any `JsseSimpleUtil` call, load the PKCS#12 with `KeyStore.load(FileInputStream, password)` and map aliases from your PFX to `sign` / `enc` entries yourself.
 
-[Opening an Issue](https://github.com/aliyun/gm-jsse/issues/new), Issues not conforming to the guidelines may be closed immediately.
+---
 
-## Changelog
+## 2. Blocking NTLS server and client (`SSLSocket` / `SSLServerSocket`)
 
-Detailed changes for each release are documented in the [release notes](https://github.com/aliyun/gm-jsse/releases).
+### 2.1 Server + client with `JsseSimpleUtil`
+
+**Server** (loopback example):
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLSocket;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+
+public class GmBlockingServerUtil {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+                "/path/to/server.both.pfx", "password", "/path/to/ca.pem");
+        try (SSLServerSocket listen = (SSLServerSocket) ctx.getServerSocketFactory()
+                .createServerSocket(8443, 50, InetAddress.getByName("0.0.0.0"))) {
+            listen.setNeedClientAuth(true); // mutual TLS
+            listen.setEnabledCipherSuites(
+                    new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+            try (SSLSocket socket = (SSLSocket) listen.accept()) {
+                socket.startHandshake();
+                InputStream in = socket.getInputStream();
+                OutputStream out = socket.getOutputStream();
+                byte[] buf = new byte[4096];
+                int n = in.read(buf);
+                if (n > 0) {
+                    out.write(buf, 0, n);
+                    out.flush();
+                }
+            }
+        }
+    }
+}
+```
+
+**Client**:
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+
+public class GmBlockingClientUtil {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+                "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+        try (SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket("host", 8443)) {
+            socket.setEnabledCipherSuites(
+                    new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+            socket.startHandshake();
+            socket.getOutputStream().write("ping".getBytes("UTF-8"));
+            socket.getOutputStream().flush();
+        }
+    }
+}
+```
+
+One-way server (no client cert): build server context with server PFX + CA; client uses `createAuthClientSSLContext(ca, false)` and `listen.setNeedClientAuth(false)`.
+
+### 2.2 Server + client without `JsseSimpleUtil`
+
+Build `SSLContext` as in [§1.2 manual mutual](#without-jssesimpleutil-manual-keystore), then:
+
+```java
+SSLServerSocketFactory ssf = ctx.getServerSocketFactory();
+SSLSocketFactory csf = ctx.getSocketFactory();
+// same listen / accept / createSocket pattern as above
+```
+
+Automated reference: `src/test/java/com/open/jgm/jsse/integration/Sm2PfxBlockingIT.java`.
+
+---
+
+## 3. Netty NTLS server and client
+
+Add Netty to **your** application (test scope in this repo only):
+
+```xml
+<dependency>
+    <groupId>io.netty</groupId>
+    <artifactId>netty-handler</artifactId>
+    <version>4.1.108.Final</version>
+</dependency>
+<dependency>
+    <groupId>io.netty</groupId>
+    <artifactId>netty-transport</artifactId>
+    <version>4.1.108.Final</version>
+</dependency>
+<dependency>
+    <groupId>io.netty</groupId>
+    <artifactId>netty-codec</artifactId>
+    <version>4.1.108.Final</version>
+</dependency>
+```
+
+### 3.1 With `JsseSimpleUtil`
+
+**Server pipeline** (core part):
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.ssl.SslHandler;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+
+SSLContext serverCtx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/server.both.pfx", "password", "/path/to/ca.pem");
+
+new ChannelInitializer<SocketChannel>() {
+    @Override
+    protected void initChannel(SocketChannel ch) {
+        SSLEngine engine = serverCtx.createSSLEngine();
+        engine.setUseClientMode(false);
+        engine.setNeedClientAuth(true);
+        engine.setEnabledProtocols(new String[]{"NTLSv1.1"});
+        engine.setEnabledCipherSuites(
+                new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+        ch.pipeline().addLast("ssl", new SslHandler(engine));
+        // add your application handlers after SSL
+    }
+};
+```
+
+**Client pipeline**:
+
+```java
+SSLContext clientCtx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+
+SSLEngine engine = clientCtx.createSSLEngine("host", 8443);
+engine.setUseClientMode(true);
+engine.setEnabledProtocols(new String[]{"NTLSv1.1"});
+engine.setEnabledCipherSuites(
+        new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+ch.pipeline().addLast("ssl", new SslHandler(engine));
+```
+
+Full runnable demos: `src/test/java/com/open/jgm/jsse/simple/TestNettyGmsslServerMain.java`, `TestNettyGmsslClientMain.java`. CI test: `integration/NettyGmsslIT.java`.
+
+### 3.2 Without `JsseSimpleUtil`
+
+Use the same `SSLContext` you built manually in §1, then identical `createSSLEngine()` / `SslHandler` setup as §3.1.
+
+---
+
+## Tests
+
+```bash
+mvn test
+```
+
+Integration: `Sm2PfxBlockingIT`, `NettyGmsslIT`, `RecordStreamSecurityTest`, `KeyScheduleTest`. Test certs: `src/test/resources/README.md`.
 
 ## License
 
 [Apache-2.0](http://www.apache.org/licenses/LICENSE-2.0)
-
-Copyright (c) 2009-present, Alibaba Cloud All rights reserved.

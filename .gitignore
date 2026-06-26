@@ -1,6 +1,5 @@
 .vscode
 .settings
-resources
 .classpath
 target/
 .project

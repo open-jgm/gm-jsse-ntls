@@ -1,147 +1,282 @@
 [English](./README.md) | 简体中文
 
-# 国密 JSSE
+# gm-jsse-ntls
 
-<p align="center">
-<a href="https://search.maven.org/search?q=g:%22com.aliyun%22%20AND%20a:%22gmsse%22"><img src="https://img.shields.io/maven-central/v/com.aliyun/gmsse.svg?label=Maven%20Central" alt="Latest Stable Version"/></a>
-<a href="https://github.com/aliyun/gm-jsse/actions/workflows/maven.yml"><img src="https://github.com/aliyun/gm-jsse/actions/workflows/maven.yml/badge.svg" alt="Java CI with Maven"/></a>
-<a href="https://ci.appveyor.com/project/JacksonTian/alibabacloud-gm-jsse/branch/master"><img src="https://ci.appveyor.com/api/projects/status/7xwn4tw8gcl86im5/branch/master?svg=true"/></a>
-<a href="https://codecov.io/gh/aliyun/gm-jsse"><img src="https://codecov.io/gh/aliyun/gm-jsse/branch/master/graph/badge.svg"/></a>
-</p>
+面向 Java 的国密 JSSE（NTLS / GMSSL）：`SSLContext`、阻塞式 `SSLSocket` / `SSLServerSocket`、`SSLEngine`（可用于 Netty）。
 
 ## 环境要求
 
-- 需要 JDK 1.7 或以上.
+- 运行需 **JDK 8+**。
+- classpath 需提供 **BouncyCastle**（本库对 `bcpkix-jdk15to18` 为 **provided**，建议 1.76+）。
+- 推荐 JDK 8 编译，或 JDK 17+ 使用 `--release 8`。
 
-## 安装依赖
+## Maven 依赖
 
 ```xml
 <dependency>
-    <groupId>com.aliyun</groupId>
-    <artifactId>gmsse</artifactId>
-    <version>{{使用maven标签所显示的版本}}</version>
+    <groupId>com.open.jgm</groupId>
+    <artifactId>gm-jsse-ntls</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>org.bouncycastle</groupId>
+    <artifactId>bcpkix-jdk15to18</artifactId>
+    <version>1.76</version>
 </dependency>
 ```
 
-## 快速使用
+启动时注册 Provider：
 
 ```java
+import com.open.jgm.jsse.GmSslProviders;
+
+GmSslProviders.ensureInstalled();
+```
+
+## 算法名约定
+
+| API | 算法字符串 |
+|-----|------------|
+| `TrustManagerFactory` + `GMProvider` | **`X509`** |
+| `CertificateFactory` + BouncyCastle | **`X.509`** |
+
+套件名：`CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()`（`ECC-SM2-WITH-SM4-CBC-SM3`）。协议：**NTLSv1.1**。
+
+**会话复用：** 不支持。
+
+---
+
+## 1. 使用 GMSSL 访问 `https://xxx/`
+
+将 `https://xxx/` 替换为实际国密 HTTPS 地址；服务端须支持 **NTLS**，而非普通 TLS 1.2。
+
+### 1.1 单向认证（客户端校验服务端）
+
+#### 使用 `JsseSimpleUtil`
+
+```java
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
 import java.net.URL;
 
-import com.aliyun.gmsse.GMProvider;
-
-public class Main {
-
+public class GmHttpsOneWayUtil {
     public static void main(String[] args) throws Exception {
-        // 初始化 SSLSocketFactory
-        GMProvider provider = new GMProvider();
-        SSLContext sc = SSLContext.getInstance("TLS", provider);
-        sc.init(null, null, null);
-        SSLSocketFactory ssf = sc.getSocketFactory();
+        GmSslProviders.ensureInstalled();
+        // 第二个参数 false 表示国密 NTLS 客户端
+        SSLContext ctx = JsseSimpleUtil.createAuthClientSSLContext("/path/to/ca.pem", false);
 
-        URL serverUrl = new URL("https://xxx/");
-        HttpsURLConnection conn = (HttpsURLConnection) serverUrl.openConnection();
-        conn.setRequestMethod("GET");
-        // 设置 SSLSocketFactory
-        conn.setSSLSocketFactory(ssf);
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
         conn.connect();
-        System.out.println("used cipher suite:");
         System.out.println(conn.getCipherSuite());
     }
 }
 ```
 
-在新的版本中，GM-JSSE 增加了对服务端证书和 CA 证书的校验，如果 CA 根证书没有导入在系统中，可能会遇到校验错误。这时，你需要通过传递信任管理器的形式来传入 CA 证书。
+#### 不使用 `JsseSimpleUtil`（手写信任库）
 
 ```java
-    BouncyCastleProvider bc = new BouncyCastleProvider();
-    KeyStore ks = KeyStore.getInstance("JKS");
-    CertificateFactory cf = CertificateFactory.getInstance("X.509", bc);
-    FileInputStream is = new FileInputStream("/path/to/ca_cert");
-    X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
-    ks.load(null, null);
-    ks.setCertificateEntry("gmca", cert);
+import com.open.jgm.jsse.GMProvider;
+import com.open.jgm.jsse.GmSslProviders;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
-    TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", provider);
-    tmf.init(ks);
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
+import java.net.URL;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 
-    sc.init(null, tmf.getTrustManagers(), null);
-    SSLSocketFactory ssf = sc.getSocketFactory();
-```
-
-### 双向认证
-
-双向认证中，客户端需要传入双证书。
-
-```java
-
-    public static X509Certificate loadCertificate(String path) throws KeyStoreException, CertificateException, FileNotFoundException {
+public class GmHttpsOneWayManual {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        GMProvider gm = GmSslProviders.gmProvider();
         BouncyCastleProvider bc = new BouncyCastleProvider();
+
+        KeyStore trust = KeyStore.getInstance("PKCS12", bc);
+        trust.load(null, null);
         CertificateFactory cf = CertificateFactory.getInstance("X.509", bc);
-        InputStream is = Server.class.getClassLoader().getResourceAsStream(path);
-        X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
-        return cert;
-    }
-
-    public static PrivateKey loadPrivateKey(String path) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException {
-        InputStream is = Server.class.getClassLoader().getResourceAsStream(path);
-        InputStreamReader inputStreamReader = new InputStreamReader(is);
-        BufferedReader bufferedReader = new BufferedReader(inputStreamReader);
-        StringBuilder sb = new StringBuilder();
-        String line = null;
-            while ((line = bufferedReader.readLine()) != null){
-            if (line.startsWith("-")){
-                continue;
-            }
-            sb.append(line).append("\n");
+        try (FileInputStream in = new FileInputStream("/path/to/ca.pem")) {
+            trust.setCertificateEntry("ca", (X509Certificate) cf.generateCertificate(in));
         }
-        String ecKey = sb.toString().replaceAll("\\r\\n|\\r|\\n", "");
-        Base64.Decoder base64Decoder = Base64.getDecoder();
-        byte[] keyByte = base64Decoder.decode(ecKey.getBytes(StandardCharsets.UTF_8));
-        PKCS8EncodedKeySpec eks2 = new PKCS8EncodedKeySpec(keyByte);
-        KeyFactory keyFactory = KeyFactory.getInstance("EC", new BouncyCastleProvider());
-        PrivateKey privateKey = keyFactory.generatePrivate(eks2);
-        return privateKey;
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", gm);
+        tmf.init(trust);
+
+        SSLContext ctx = SSLContext.getInstance("TLS", gm);
+        ctx.init(null, tmf.getTrustManagers(), null);
+
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.connect();
     }
-
-    KeyStore ks = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
-    ks.load(null, null);
-
-    // 传入签名证书
-    ks.setKeyEntry("sign", loadPrivateKey("sm2/client_sign.key"), new char[0], new X509Certificate[] {
-        loadCertificate("sm2/client_sign.crt")
-    });
-    // 传入加密证书
-    ks.setKeyEntry("enc", Server.loadPrivateKey("sm2/client_enc.key"), new char[0], new X509Certificate[] {
-        oadCertificate("sm2/client_enc.crt")
-    });
-
-    KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-    kmf.init(ks, new char[0]);
-
-    // 传入根证书
-    ks.setCertificateEntry("gmca", loadCertificate("sm2/chain-ca.crt"));
-
-    TrustManagerFactory tmf = TrustManagerFactory.getInstance("X509", provider);
-    tmf.init(ks);
-
-    sc.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-    SSLSocketFactory ssf = sc.getSocketFactory();
+}
 ```
 
-## 问题
+### 1.2 双向认证（SM2 双证）
 
-[Opening an Issue](https://github.com/aliyun/gm-jsse/issues/new), Issues not conforming to the guidelines may be closed immediately.
+#### 使用 `JsseSimpleUtil`
 
-## 发行说明
+```java
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
 
-每个版本的详细更改记录在[发行说明](https://github.com/aliyun/gm-jsse/releases).
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import java.net.URL;
+
+public class GmHttpsMutualUtil {
+    public static void main(String[] args) throws Exception {
+        GmSslProviders.ensureInstalled();
+        SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+                "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+
+        HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+        conn.setSSLSocketFactory(ctx.getSocketFactory());
+        conn.connect();
+    }
+}
+```
+
+签名/加密分两个 PFX：
+
+```java
+SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/sign.pfx", "signPwd", "/path/to/enc.pfx", "encPwd", "/path/to/ca.pem");
+```
+
+#### 不使用 `JsseSimpleUtil`
+
+KeyStore 中客户端密钥别名须为 **`sign`**、**`enc`**（与 `GMX509KeyManager` 一致）。可从 PFX 自行 `KeyStore.load`，或仅用工具类读证书/私钥再装入 KeyStore：
+
+```java
+import com.open.jgm.jsse.GMProvider;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+
+import javax.net.ssl.*;
+import java.net.URL;
+import java.security.KeyStore;
+import java.security.cert.X509Certificate;
+
+// 构建 SSLContext 后：
+HttpsURLConnection conn = (HttpsURLConnection) new URL("https://xxx/").openConnection();
+conn.setSSLSocketFactory(ctx.getSocketFactory());
+conn.connect();
+```
+
+（完整 KeyStore 组装步骤同英文 README §1.2 manual。）
+
+---
+
+## 2. 阻塞式 NTLS 服务端 / 客户端
+
+### 2.1 使用 `JsseSimpleUtil`
+
+**服务端**：
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.GmSslProviders;
+import com.open.jgm.jsse.JsseSimpleUtil;
+
+import javax.net.ssl.*;
+import java.net.InetAddress;
+
+SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/server.both.pfx", "password", "/path/to/ca.pem");
+SSLServerSocket listen = (SSLServerSocket) ctx.getServerSocketFactory()
+        .createServerSocket(8443, 50, InetAddress.getByName("0.0.0.0"));
+listen.setNeedClientAuth(true);
+listen.setEnabledCipherSuites(
+        new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+SSLSocket socket = (SSLSocket) listen.accept();
+socket.startHandshake();
+```
+
+**客户端**：
+
+```java
+SSLContext ctx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket("host", 8443);
+socket.setEnabledCipherSuites(
+        new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+socket.startHandshake();
+```
+
+单向：服务端 `setNeedClientAuth(false)`；客户端 `createAuthClientSSLContext(ca, false)`。
+
+### 2.2 不使用 `JsseSimpleUtil`
+
+按 §1 手工 `SSLContext.init` 后，使用 `getServerSocketFactory()` / `getSocketFactory()`，配置同上。
+
+参考：`integration/Sm2PfxBlockingIT.java`。
+
+---
+
+## 3. Netty NTLS 服务端 / 客户端
+
+业务工程需自行引入 `netty-handler`、`netty-transport`、`netty-codec`（版本可与仓库测试依赖一致 4.1.108.Final）。
+
+### 3.1 使用 `JsseSimpleUtil`
+
+**服务端**（在 `ChannelInitializer` 中）：
+
+```java
+import com.open.jgm.jsse.CipherSuite;
+import com.open.jgm.jsse.JsseSimpleUtil;
+import io.netty.handler.ssl.SslHandler;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+
+SSLContext serverCtx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/server.both.pfx", "password", "/path/to/ca.pem");
+
+SSLEngine engine = serverCtx.createSSLEngine();
+engine.setUseClientMode(false);
+engine.setNeedClientAuth(true);
+engine.setEnabledProtocols(new String[]{"NTLSv1.1"});
+engine.setEnabledCipherSuites(
+        new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+ch.pipeline().addLast("ssl", new SslHandler(engine));
+```
+
+**客户端**：
+
+```java
+SSLContext clientCtx = JsseSimpleUtil.createSm2SSLContext(
+        "/path/to/client.both.pfx", "password", "/path/to/ca.pem");
+SSLEngine engine = clientCtx.createSSLEngine("host", 8443);
+engine.setUseClientMode(true);
+engine.setEnabledProtocols(new String[]{"NTLSv1.1"});
+engine.setEnabledCipherSuites(
+        new String[]{CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3.getName()});
+ch.pipeline().addLast("ssl", new SslHandler(engine));
+```
+
+完整示例：`TestNettyGmsslServerMain` / `TestNettyGmsslClientMain`；自动化：`NettyGmsslIT`。
+
+### 3.2 不使用 `JsseSimpleUtil`
+
+使用 §1 手工构建的 `SSLContext`，`SSLEngine` / `SslHandler` 配置与 §3.1 相同。
+
+---
+
+## 测试
+
+```bash
+mvn test
+```
+
+集成测试：`Sm2PfxBlockingIT`、`NettyGmsslIT` 等。测试证书：`src/test/resources/README.md`。
 
 ## 许可证
 
 [Apache-2.0](http://www.apache.org/licenses/LICENSE-2.0)
-
-Copyright (c) 2009-present, Alibaba Cloud All rights reserved.
