@@ -55,6 +55,10 @@ public class ServerHello extends Handshake.Body {
         return suite;
     }
 
+    public ProtocolVersion getProtocolVersion() {
+        return version;
+    }
+
     @Override
     public byte[] getBytes() throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();

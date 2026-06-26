@@ -17,7 +17,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void enableSessionCreationTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertTrue(ss.getEnableSessionCreation());
         ss.setEnableSessionCreation(false);
@@ -28,7 +28,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void getSupportedCipherSuitesTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertArrayEquals(new String[] {"ECC-SM2-WITH-SM4-CBC-SM3"}, ss.getSupportedCipherSuites());
         ss.close();
@@ -37,7 +37,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void getSupportedProtocolsTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertArrayEquals(new String[] {"NTLSv1.1"}, ss.getSupportedProtocols());
         ss.close();
@@ -46,7 +46,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void enabledCipherSuitesTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertArrayEquals(new String[] {"ECC-SM2-WITH-SM4-CBC-SM3"}, ss.getEnabledCipherSuites());
         ss.setEnabledCipherSuites(new String[] {});
@@ -57,7 +57,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void enabledProtocolsTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertArrayEquals(new String[] {"NTLSv1.1"}, ss.getEnabledProtocols());
         ss.setEnabledProtocols(new String[] {});
@@ -68,7 +68,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void needClientAuthTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertFalse(ss.getNeedClientAuth());
         ss.setNeedClientAuth(true);
@@ -82,7 +82,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void wantClientAuthTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertFalse(ss.getWantClientAuth());
         ss.setWantClientAuth(true);
@@ -95,7 +95,7 @@ public class GMSSLServerSocketTest {
     @Test
     public void useClientModeTest() throws Exception {
         GMSSLServerSocketFactory ssf = new GMSSLServerSocketFactory(getSSLContext());
-        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(8080);
+        SSLServerSocket ss = (SSLServerSocket)ssf.createServerSocket(0);
 
         Assert.assertFalse(ss.getUseClientMode());
         ss.setUseClientMode(true);

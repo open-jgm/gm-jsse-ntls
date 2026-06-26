@@ -1,21 +1,36 @@
 package com.open.jgm.jsse;
 
-import javax.net.ssl.*;
-import java.security.*;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.SSLContextSpi;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLServerSocketFactory;
+import javax.net.ssl.SSLSessionContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509KeyManager;
+import javax.net.ssl.X509TrustManager;
+import java.security.KeyManagementException;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 public class GMSSLContextSpi extends SSLContextSpi {
-    static List<CipherSuite> supportedSuites = new CopyOnWriteArrayList<CipherSuite>();
-    static List<ProtocolVersion> supportedProtocols = new CopyOnWriteArrayList<ProtocolVersion>();
+    static final List<CipherSuite> supportedSuites;
+    static final List<ProtocolVersion> supportedProtocols;
 
     static {
-        // setup suites
-        supportedSuites.add(CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3);
-        // supportedSuites.add(CipherSuite.NTLS_SM2_WITH_SM4_GCM_SM3);
+        List<CipherSuite> suites = new ArrayList<CipherSuite>();
+        suites.add(CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3);
+        supportedSuites = Collections.unmodifiableList(suites);
 
-        // setup protocols
-        supportedProtocols.add(ProtocolVersion.NTLS_1_1);
+        List<ProtocolVersion> protocols = new ArrayList<ProtocolVersion>();
+        protocols.add(ProtocolVersion.NTLS_1_1);
+        supportedProtocols = Collections.unmodifiableList(protocols);
     }
 
     public SSLConfiguration sslConfig;
@@ -114,12 +129,10 @@ public class GMSSLContextSpi extends SSLContextSpi {
         return supportedProtocols;
     }
 
-    // Get default protocols.
     List<ProtocolVersion> getDefaultProtocolVersions(boolean roleIsServer) {
         return supportedProtocols;
     }
 
-    // Get default cipher suites.
     List<CipherSuite> getDefaultCipherSuites(boolean roleIsServer) {
         return supportedSuites;
     }

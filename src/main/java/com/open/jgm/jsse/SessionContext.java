@@ -2,42 +2,44 @@ package com.open.jgm.jsse;
 
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSessionContext;
+import java.util.Collections;
 import java.util.Enumeration;
 
 public class SessionContext implements SSLSessionContext {
 
-    public SessionContext() {
+    private int sessionCacheSize;
+    private int sessionTimeout;
 
+    public SessionContext() {
     }
 
     public Enumeration<byte[]> getIds() {
-        // TODO Auto-generated method stub
-        return null;
+        return Collections.emptyEnumeration();
     }
 
-    public SSLSession getSession(byte[] arg0) {
-        // TODO Auto-generated method stub
+    public SSLSession getSession(byte[] sessionId) {
         return null;
     }
 
     public int getSessionCacheSize() {
-        // TODO Auto-generated method stub
-        return 0;
+        return sessionCacheSize;
     }
 
-    public void setSessionCacheSize(int arg0) throws IllegalArgumentException {
-        // TODO Auto-generated method stub
-
+    public void setSessionCacheSize(int size) throws IllegalArgumentException {
+        if (size < 0) {
+            throw new IllegalArgumentException("session cache size must not be negative");
+        }
+        sessionCacheSize = size;
     }
 
     public int getSessionTimeout() {
-        // TODO Auto-generated method stub
-        return 0;
+        return sessionTimeout;
     }
 
-    public void setSessionTimeout(int arg0) throws IllegalArgumentException {
-        // TODO Auto-generated method stub
-
+    public void setSessionTimeout(int seconds) throws IllegalArgumentException {
+        if (seconds < 0) {
+            throw new IllegalArgumentException("session timeout must not be negative");
+        }
+        sessionTimeout = seconds;
     }
-    
 }

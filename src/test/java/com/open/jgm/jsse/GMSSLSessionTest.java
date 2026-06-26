@@ -54,4 +54,29 @@ public class GMSSLSessionTest {
         id[0] = 9;
         Assert.assertEquals(1, sid.getId()[0]);
     }
+
+    @Test
+    public void constructorCopiesEnabledLists() {
+        java.util.List<CipherSuite> suites = new java.util.ArrayList<CipherSuite>();
+        suites.add(CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3);
+        java.util.List<ProtocolVersion> protocols = new java.util.ArrayList<ProtocolVersion>();
+        protocols.add(ProtocolVersion.NTLS_1_1);
+
+        GMSSLSession session = new GMSSLSession(suites, protocols);
+        suites.clear();
+        protocols.clear();
+
+        Assert.assertEquals(1, session.enabledSuites.size());
+        Assert.assertEquals(1, session.enabledProtocols.size());
+    }
+
+    @Test
+    public void sessionContextRoundTrip() {
+        GMSSLSession session = new GMSSLSession();
+        SessionContext context = new SessionContext();
+
+        session.setSessionContext(context);
+
+        Assert.assertEquals(context, session.getSessionContext());
+    }
 }

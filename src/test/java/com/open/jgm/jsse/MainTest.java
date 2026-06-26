@@ -22,6 +22,7 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
 
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Test;
 
 public class MainTest {
@@ -52,7 +53,11 @@ public class MainTest {
         HttpsURLConnection conn = (HttpsURLConnection) serverUrl.toURL().openConnection();
         conn.setRequestMethod("GET");
         conn.setSSLSocketFactory(ssf);
-        Assert.assertEquals(200, conn.getResponseCode());
+        try {
+            Assert.assertEquals(200, conn.getResponseCode());
+        } catch (IOException e) {
+            Assume.assumeNoException("sm2only.ovssl.cn is not available for interop testing", e);
+        }
         Assert.assertEquals("ECC-SM2-WITH-SM4-CBC-SM3", conn.getCipherSuite());
         // 读取服务器端返回的内容
         InputStream connInputStream = conn.getInputStream();

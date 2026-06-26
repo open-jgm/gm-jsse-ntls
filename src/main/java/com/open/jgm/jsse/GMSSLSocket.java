@@ -148,7 +148,8 @@ public class GMSSLSocket extends SSLSocket {
             cipherSuites.add(suite);
         }
 
-        connection.sslConfig.enabledCipherSuites = cipherSuites;
+        connection.sslConfig.setEnabledCipherSuites(cipherSuites);
+        connection.session.setEnabledSuites(connection.sslConfig.enabledCipherSuites);
     }
 
     @Override
@@ -162,7 +163,8 @@ public class GMSSLSocket extends SSLSocket {
             throw new IllegalArgumentException();
         }
 
-        connection.sslConfig.enabledProtocols = ProtocolVersion.namesOf(protocols);
+        connection.sslConfig.setEnabledProtocols(ProtocolVersion.namesOf(protocols));
+        connection.session.setEnabledProtocols(connection.sslConfig.enabledProtocols);
     }
 
     @Override

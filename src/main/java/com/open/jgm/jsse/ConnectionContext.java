@@ -14,7 +14,10 @@ public abstract class ConnectionContext {
         this.sslContext = context;
         this.sslConfig = sslConfig;
         this.socket = socket;
-        this.session = new GMSSLSession();
+        this.session = new GMSSLSession(sslConfig.enabledCipherSuites, sslConfig.enabledProtocols);
+        this.session.setSessionContext((SessionContext) (sslConfig.isClientMode
+                ? context.engineGetClientSessionContext()
+                : context.engineGetServerSessionContext()));
     }
 
     public abstract void kickstart() throws IOException;

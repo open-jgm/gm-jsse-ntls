@@ -72,6 +72,7 @@ public class GMSSLEngine extends SSLEngine {
         this.peerPort = peerPort;
         this.sslConfig = new SSLConfiguration(context, true);
         this.session = new GMSSLSession(sslConfig.enabledCipherSuites, sslConfig.enabledProtocols);
+        this.session.setSessionContext((SessionContext) context.engineGetClientSessionContext());
         this.session.peerHost = peerHost;
         this.session.peerPort = peerPort;
         this.session.protocol = ProtocolVersion.NTLS_1_1;
@@ -273,8 +274,8 @@ public class GMSSLEngine extends SSLEngine {
 
     @Override
     public void setEnabledCipherSuites(String[] suites) {
-        sslConfig.enabledCipherSuites = CipherSuite.validValuesOf(suites);
-        session.enabledSuites = sslConfig.enabledCipherSuites;
+        sslConfig.setEnabledCipherSuites(CipherSuite.validValuesOf(suites));
+        session.setEnabledSuites(sslConfig.enabledCipherSuites);
     }
 
     @Override
@@ -289,8 +290,8 @@ public class GMSSLEngine extends SSLEngine {
 
     @Override
     public void setEnabledProtocols(String[] protocols) {
-        sslConfig.enabledProtocols = ProtocolVersion.namesOf(protocols);
-        session.enabledProtocols = sslConfig.enabledProtocols;
+        sslConfig.setEnabledProtocols(ProtocolVersion.namesOf(protocols));
+        session.setEnabledProtocols(sslConfig.enabledProtocols);
     }
 
     @Override
@@ -313,8 +314,11 @@ public class GMSSLEngine extends SSLEngine {
             throw new IllegalArgumentException("cannot change mode after handshake starts");
         }
         sslConfig = new SSLConfiguration(context, mode);
-        session.enabledSuites = sslConfig.enabledCipherSuites;
-        session.enabledProtocols = sslConfig.enabledProtocols;
+        session.setEnabledSuites(sslConfig.enabledCipherSuites);
+        session.setEnabledProtocols(sslConfig.enabledProtocols);
+        session.setSessionContext((SessionContext) (mode
+                ? context.engineGetClientSessionContext()
+                : context.engineGetServerSessionContext()));
     }
 
     @Override
@@ -563,12 +567,20 @@ public class GMSSLEngine extends SSLEngine {
 
     private void receiveServerHello(Handshake hs) throws IOException {
         ServerHello sh = (ServerHello) hs.body;
-        sh.getCompressionMethod();
-        session.cipherSuite = sh.getCipherSuite();
+        HandshakeNegotiator.Negotiated negotiated;
+        try {
+            negotiated = HandshakeNegotiator.validateServerHello(sslConfig.enabledProtocols,
+                    sslConfig.enabledCipherSuites, sh.getProtocolVersion(), sh.getCipherSuite(),
+                    sh.getCompressionMethod());
+        } catch (HandshakeNegotiator.NegotiationException ex) {
+            fail(ex.getDescription(), ex.getMessage());
+            return;
+        }
+        session.cipherSuite = negotiated.getCipherSuite();
         session.peerHost = peerHost;
         session.peerPort = peerPort;
         session.sessionId = new GMSSLSession.ID(sh.getSessionId());
-        session.protocol = ProtocolVersion.NTLS_1_1;
+        session.setProtocol(negotiated.getProtocolVersion());
         securityParameters.serverRandom = sh.getRandom();
         handshakes.add(hs);
     }
@@ -650,9 +662,11 @@ public class GMSSLEngine extends SSLEngine {
         byte[] sessionId = new byte[32];
         secureRandom().nextBytes(sessionId);
         ClientRandom random = new ClientRandom(unixTime(), secureRandom().generateSeed(28));
-        CipherSuite cs = CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3;
+        CipherSuite cs = session.cipherSuite == null
+                ? CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3
+                : session.cipherSuite;
         session.cipherSuite = cs;
-        session.protocol = ProtocolVersion.NTLS_1_1;
+        session.setProtocol(ProtocolVersion.NTLS_1_1);
         session.sessionId = new GMSSLSession.ID(sessionId);
         ServerHello sh = new ServerHello(ProtocolVersion.NTLS_1_1, random.getBytes(), sessionId, cs, CompressionMethod.NULL);
         securityParameters.serverRandom = sh.getRandom();
@@ -719,6 +733,17 @@ public class GMSSLEngine extends SSLEngine {
 
     private void receiveClientHello(Handshake hs) throws IOException {
         ClientHello ch = (ClientHello) hs.body;
+        HandshakeNegotiator.Negotiated negotiated;
+        try {
+            negotiated = HandshakeNegotiator.negotiateClientHello(sslConfig.enabledProtocols,
+                    sslConfig.enabledCipherSuites, ch.getProtocolVersion(), ch.getCipherSuites(),
+                    ch.getCompressionMethods());
+        } catch (HandshakeNegotiator.NegotiationException ex) {
+            fail(ex.getDescription(), ex.getMessage());
+            return;
+        }
+        session.cipherSuite = negotiated.getCipherSuite();
+        session.setProtocol(negotiated.getProtocolVersion());
         securityParameters.clientRandom = ch.getClientRandom().getBytes();
         handshakes.add(hs);
     }
@@ -797,52 +822,13 @@ public class GMSSLEngine extends SSLEngine {
     }
 
     private void applyKeyBlock(byte[] preMasterSecret, boolean client) throws SSLException {
-        try {
-            ByteArrayOutputStream seedOut = new ByteArrayOutputStream();
-            seedOut.write(securityParameters.clientRandom);
-            seedOut.write(securityParameters.serverRandom);
-            securityParameters.masterSecret = Crypto.prf(preMasterSecret, "master secret".getBytes(),
-                    seedOut.toByteArray(), preMasterSecret.length);
-
-            ByteArrayOutputStream keyBlockSeed = new ByteArrayOutputStream();
-            keyBlockSeed.write(securityParameters.serverRandom);
-            keyBlockSeed.write(securityParameters.clientRandom);
-            byte[] keyBlock = Crypto.prf(securityParameters.masterSecret, "key expansion".getBytes(),
-                    keyBlockSeed.toByteArray(), 128);
-
-            byte[] clientMacKey = slice(keyBlock, 0, 32);
-            byte[] serverMacKey = slice(keyBlock, 32, 32);
-            byte[] clientWriteKey = slice(keyBlock, 64, 16);
-            byte[] serverWriteKey = slice(keyBlock, 80, 16);
-            byte[] clientWriteIV = slice(keyBlock, 96, 16);
-            byte[] serverWriteIV = slice(keyBlock, 112, 16);
-
-            SM4Engine clientEncryptCipher = new SM4Engine();
-            clientEncryptCipher.init(true, new KeyParameter(clientWriteKey));
-            SM4Engine serverEncryptCipher = new SM4Engine();
-            serverEncryptCipher.init(true, new KeyParameter(serverWriteKey));
-            SM4Engine clientDecryptCipher = new SM4Engine();
-            clientDecryptCipher.init(false, new KeyParameter(clientWriteKey));
-            SM4Engine serverDecryptCipher = new SM4Engine();
-            serverDecryptCipher.init(false, new KeyParameter(serverWriteKey));
-
-            if (client) {
-                recordStream.setEncryptMacKey(clientMacKey);
-                recordStream.setDecryptMacKey(serverMacKey);
-                recordStream.setWriteCipher(clientEncryptCipher);
-                recordStream.setReadCipher(serverDecryptCipher);
-                recordStream.setEncryptIV(clientWriteIV);
-                recordStream.setDecryptIV(serverWriteIV);
-            } else {
-                recordStream.setDecryptMacKey(clientMacKey);
-                recordStream.setEncryptMacKey(serverMacKey);
-                recordStream.setReadCipher(clientDecryptCipher);
-                recordStream.setWriteCipher(serverEncryptCipher);
-                recordStream.setDecryptIV(clientWriteIV);
-                recordStream.setEncryptIV(serverWriteIV);
-            }
-        } catch (Exception ex) {
-            throw new SSLException("caculate key block failed", ex);
+        KeySchedule.Material material = KeySchedule.derive(preMasterSecret,
+                securityParameters.clientRandom, securityParameters.serverRandom);
+        securityParameters.masterSecret = material.getMasterSecret();
+        if (client) {
+            KeySchedule.applyClientWrite(recordStream, material);
+        } else {
+            KeySchedule.applyServerWrite(recordStream, material);
         }
     }
 

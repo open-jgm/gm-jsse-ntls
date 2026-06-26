@@ -8,7 +8,7 @@ import org.bouncycastle.crypto.params.KeyParameter;
 
 import javax.net.ssl.SSLException;
 import java.io.*;
-import java.util.Arrays;
+import java.security.MessageDigest;
 
 public class RecordStream {
     // 加解密的字节块大小
@@ -169,48 +169,96 @@ public class RecordStream {
     }
 
     public byte[] decrypt(Record record) throws IOException {
-        byte[] decrypted = decrypt(record.fragment, readCipher, decryptIV);
-        // iv, content, mac, padding length, padding
-        int paddingLength = decrypted[decrypted.length - 1];
-        byte[] iv = new byte[16];
-        System.arraycopy(decrypted, 0, iv, 0, 16);
+        try {
+            validateEncryptedRecord(record);
+            byte[] decrypted = decrypt(record.fragment, readCipher, decryptIV);
+            validatePlaintextBlock(decrypted);
 
-        byte[] content = new byte[decrypted.length - paddingLength - 1 - 32 - 16];
-        System.arraycopy(decrypted, 16, content, 0, content.length);
+            // iv, content, mac, padding length, padding
+            int paddingLength = decrypted[decrypted.length - 1] & 0xFF;
+            validatePadding(decrypted, paddingLength);
 
-        byte[] serverMac = new byte[32];
-        System.arraycopy(decrypted, 16 + content.length, serverMac, 0, serverMac.length);
+            int contentLength = decrypted.length - paddingLength - 1 - 32 - 16;
+            if (contentLength < 0) {
+                throw badRecordMac();
+            }
 
-        // HMAC_hash(MAC_write_secret，seq_num + TLSCompresed.type + TLSCompresed.version
-        // + TLSCompresed.length + TLSCompresed.fragment)
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        long seqNo = readSeqNo.nextValue();
-        // seq_num
-        baos.write((byte) (seqNo >>> 56));
-        baos.write((byte) (seqNo >>> 48));
-        baos.write((byte) (seqNo >>> 40));
-        baos.write((byte) (seqNo >>> 32));
-        baos.write((byte) (seqNo >>> 24));
-        baos.write((byte) (seqNo >>> 16));
-        baos.write((byte) (seqNo >>> 8));
-        baos.write((byte) (seqNo));
-        // type
-        baos.write(record.contentType.getValue());
-        // version
-        baos.write(record.version.getMajor());
-        baos.write(record.version.getMinor());
-        // length
-        baos.write(content.length >>> 8 & 0xFF);
-        baos.write(content.length & 0xFF);
-        // fragement
-        baos.write(content);
-        byte[] mac = hmacHash(baos.toByteArray(), decryptMacKey);
-        if (!Arrays.equals(serverMac, mac)) {
-            Alert alert = new Alert(Alert.Level.FATAL, Alert.Description.BAD_RECORD_MAC);
-            throw new AlertException(alert, false);
+            byte[] content = new byte[contentLength];
+            System.arraycopy(decrypted, 16, content, 0, content.length);
+
+            byte[] serverMac = new byte[32];
+            System.arraycopy(decrypted, 16 + content.length, serverMac, 0, serverMac.length);
+
+            // HMAC_hash(MAC_write_secret，seq_num + TLSCompresed.type + TLSCompresed.version
+            // + TLSCompresed.length + TLSCompresed.fragment)
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            long seqNo = readSeqNo.nextValue();
+            // seq_num
+            baos.write((byte) (seqNo >>> 56));
+            baos.write((byte) (seqNo >>> 48));
+            baos.write((byte) (seqNo >>> 40));
+            baos.write((byte) (seqNo >>> 32));
+            baos.write((byte) (seqNo >>> 24));
+            baos.write((byte) (seqNo >>> 16));
+            baos.write((byte) (seqNo >>> 8));
+            baos.write((byte) (seqNo));
+            // type
+            baos.write(record.contentType.getValue());
+            // version
+            baos.write(record.version.getMajor());
+            baos.write(record.version.getMinor());
+            // length
+            baos.write(content.length >>> 8 & 0xFF);
+            baos.write(content.length & 0xFF);
+            // fragement
+            baos.write(content);
+            byte[] mac = hmacHash(baos.toByteArray(), decryptMacKey);
+            if (!MessageDigest.isEqual(serverMac, mac)) {
+                throw badRecordMac();
+            }
+
+            return content;
+        } catch (AlertException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw badRecordMac();
         }
+    }
 
-        return content;
+    private void validateEncryptedRecord(Record record) throws AlertException {
+        if (record == null || record.fragment == null || readCipher == null
+                || decryptIV == null || decryptMacKey == null) {
+            throw badRecordMac();
+        }
+        if (record.fragment.length == 0 || record.fragment.length % BLOCK_SIZE != 0) {
+            throw badRecordMac();
+        }
+    }
+
+    private void validatePlaintextBlock(byte[] decrypted) throws AlertException {
+        int minimumLength = BLOCK_SIZE + 32 + 1;
+        if (decrypted == null || decrypted.length < minimumLength || decrypted.length % BLOCK_SIZE != 0) {
+            throw badRecordMac();
+        }
+    }
+
+    private void validatePadding(byte[] decrypted, int paddingLength) throws AlertException {
+        if (paddingLength < 1 || paddingLength > BLOCK_SIZE) {
+            throw badRecordMac();
+        }
+        int paddingStart = decrypted.length - paddingLength;
+        if (paddingStart <= 0 || paddingStart - 1 < BLOCK_SIZE + 32) {
+            throw badRecordMac();
+        }
+        for (int i = paddingStart; i < decrypted.length; i++) {
+            if ((decrypted[i] & 0xFF) != paddingLength) {
+                throw badRecordMac();
+            }
+        }
+    }
+
+    private AlertException badRecordMac() {
+        return new AlertException(new Alert(Alert.Level.FATAL, Alert.Description.BAD_RECORD_MAC), false);
     }
 
     public Record encrypt(Record record) throws IOException {

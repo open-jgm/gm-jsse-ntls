@@ -123,7 +123,7 @@ public class ServerConnectionContext extends ConnectionContext {
         Certificate cert = (Certificate) cf.body;
         X509Certificate[] peerCerts = cert.getCertificates();
         try {
-            sslContext.getTrustManager().checkServerTrusted(peerCerts, session.cipherSuite.getAuthType());
+            sslContext.getTrustManager().checkClientTrusted(peerCerts, session.cipherSuite.getAuthType());
         } catch (CertificateException e) {
             throw new SSLException("could not verify peer certificate!", e);
         }
@@ -179,73 +179,10 @@ public class ServerConnectionContext extends ConnectionContext {
             throw new SSLException("decrypt pre master secret failed", e);
         }
 
-        // 计算 masterSecret
-        byte[] MASTER_SECRET = "master secret".getBytes();
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        os.write(securityParameters.clientRandom);
-        os.write(securityParameters.serverRandom);
-        byte[] seed = os.toByteArray();
-        try {
-            securityParameters.masterSecret = Crypto.prf(preMasterSecret, MASTER_SECRET, seed, preMasterSecret.length);
-        } catch (Exception ex) {
-            throw new SSLException("caculate master secret failed", ex);
-        }
-
-        // key_block = PRF(SecurityParameters.master_secret，"keyexpansion"，
-        // SecurityParameters.server_random +SecurityParameters.client_random);
-        // new TLSKeyMaterialSpec(masterSecret, TLSKeyMaterialSpec.KEY_EXPANSION,
-        // key_block.length, server_random, client_random))
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.write(securityParameters.serverRandom);
-        baos.write(securityParameters.clientRandom);
-        byte[] keyBlockSeed = baos.toByteArray();
-        byte[] keyBlock = null;
-        try {
-            keyBlock = Crypto.prf(securityParameters.masterSecret, "key expansion".getBytes(), keyBlockSeed, 128);
-        } catch (Exception e) {
-            throw new SSLException("caculate key block failed", e);
-        }
-
-        // client_write_MAC_secret[SecurityParameters.hash_size]
-        // server_write_MAC_secret[SecurityParameters.hash_size]
-        // client_write_key[SecurityParameters.key_material_length]
-        // server_write_key[SecurityParameters.key_material_length]
-        // clientWriteIV
-        // serverWriteIV
-
-        // client mac key
-        byte[] clientMacKey = new byte[32];
-        System.arraycopy(keyBlock, 0, clientMacKey, 0, 32);
-        socket.recordStream.setDecryptMacKey(clientMacKey);
-
-        // server mac key
-        byte[] serverMacKey = new byte[32];
-        System.arraycopy(keyBlock, 32, serverMacKey, 0, 32);
-        socket.recordStream.setEncryptMacKey(serverMacKey);
-
-        // client write key
-        byte[] clientWriteKey = new byte[16];
-        System.arraycopy(keyBlock, 64, clientWriteKey, 0, 16);
-        SM4Engine readCipher = new SM4Engine();
-        readCipher.init(false, new KeyParameter(clientWriteKey));
-        socket.recordStream.setReadCipher(readCipher);
-
-        // server write key
-        byte[] serverWriteKey = new byte[16];
-        System.arraycopy(keyBlock, 80, serverWriteKey, 0, 16);
-        SM4Engine writeCipher = new SM4Engine();
-        writeCipher.init(true, new KeyParameter(serverWriteKey));
-        socket.recordStream.setWriteCipher(writeCipher);
-
-        // client write iv
-        byte[] clientWriteIV = new byte[16];
-        System.arraycopy(keyBlock, 96, clientWriteIV, 0, 16);
-        socket.recordStream.setDecryptIV(clientWriteIV);
-
-        // server write iv
-        byte[] serverWriteIV = new byte[16];
-        System.arraycopy(keyBlock, 112, serverWriteIV, 0, 16);
-        socket.recordStream.setEncryptIV(serverWriteIV);
+        KeySchedule.Material material = KeySchedule.derive(preMasterSecret,
+                securityParameters.clientRandom, securityParameters.serverRandom);
+        securityParameters.masterSecret = material.getMasterSecret();
+        KeySchedule.applyServerWrite(socket.recordStream, material);
     }
 
     private void sendServerHelloDone() throws IOException {
@@ -312,9 +249,12 @@ public class ServerConnectionContext extends ConnectionContext {
         sslContext.getSecureRandom().nextBytes(sessionId);
 
         CompressionMethod method = CompressionMethod.NULL;
-        CipherSuite cs = CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3;
-        // CipherSuite cs = CipherSuite.NTLS_SM2_WITH_SM4_GCM_SM3;
+        CipherSuite cs = session.cipherSuite == null
+                ? CipherSuite.NTLS_SM2_WITH_SM4_CBC_SM3
+                : session.cipherSuite;
         session.cipherSuite = cs;
+        session.setProtocol(version);
+        session.sessionId = new GMSSLSession.ID(sessionId);
         ServerHello sh = new ServerHello(version, random.getBytes(), sessionId, cs, method);
         securityParameters.serverRandom = sh.getRandom();
         Handshake hs = new Handshake(Handshake.Type.SERVER_HELLO, sh);
@@ -333,11 +273,16 @@ public class ServerConnectionContext extends ConnectionContext {
         Handshake hs = Handshake.read(new ByteArrayInputStream(rc.fragment));
         ClientHello ch = (ClientHello) hs.body;
 
-        // TODO: check the version, cipher suite, compression methods
-        ProtocolVersion version = ch.getProtocolVersion();
-        ch.getCipherSuites();
-        ch.getCompressionMethods();
-        ch.getSessionId();
+        HandshakeNegotiator.Negotiated negotiated;
+        try {
+            negotiated = HandshakeNegotiator.negotiateClientHello(sslConfig.enabledProtocols,
+                    sslConfig.enabledCipherSuites, ch.getProtocolVersion(), ch.getCipherSuites(),
+                    ch.getCompressionMethods());
+        } catch (HandshakeNegotiator.NegotiationException ex) {
+            throw new AlertException(new Alert(Alert.Level.FATAL, ex.getDescription()), true);
+        }
+        session.cipherSuite = negotiated.getCipherSuite();
+        session.setProtocol(negotiated.getProtocolVersion());
 
         securityParameters.clientRandom = ch.getClientRandom().getBytes();
         handshakes.add(hs);

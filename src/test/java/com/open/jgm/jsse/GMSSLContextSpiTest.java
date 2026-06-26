@@ -72,6 +72,27 @@ public class GMSSLContextSpiTest {
         Assert.assertEquals(x509KeyManager, keyManager.get(mySSLContextSpi));
     }
 
+    @Test
+    public void supportedListsDoNotExposeMutableState() {
+        GMSSLContextSpi context = new GMSSLContextSpi();
+
+        try {
+            context.getSupportedCipherSuites().clear();
+            Assert.fail();
+        } catch (UnsupportedOperationException expected) {
+            // ok
+        }
+        try {
+            context.getSupportedProtocolVersions().clear();
+            Assert.fail();
+        } catch (UnsupportedOperationException expected) {
+            // ok
+        }
+
+        Assert.assertEquals(1, context.getSupportedCipherSuites().size());
+        Assert.assertEquals(1, context.getSupportedProtocolVersions().size());
+    }
+
     class KeyManagerImpl implements KeyManager {
     }
 

@@ -1,10 +1,7 @@
 package com.open.jgm.jsse;
 
 import javax.net.ssl.X509TrustManager;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
-import java.security.SignatureException;
+import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 
@@ -12,7 +9,7 @@ public class GMX509TrustManager implements X509TrustManager {
     private final X509Certificate[] trusted;
 
     GMX509TrustManager(X509Certificate[] trusted) {
-        this.trusted = trusted;
+        this.trusted = trusted == null ? null : (X509Certificate[]) trusted.clone();
     }
 
     @Override
@@ -34,41 +31,62 @@ public class GMX509TrustManager implements X509TrustManager {
     }
 
     private void checkTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-        // NOTE: this is not a full-featured path validation algorithm.
-        //
-        // Step 0: check if the target is valid now.
-        int start = 1; // 1;
-        chain[start].checkValidity();
-
-        // Step 1: verify that the chain is complete and valid.
-        for (int i = start + 1; i < chain.length; i++) {
-            chain[i].checkValidity();
-            try {
-                chain[i - 1].verify(chain[i].getPublicKey());
-            } catch (NoSuchAlgorithmException nsae) {
-                throw new CertificateException(nsae.toString());
-            } catch (NoSuchProviderException nspe) {
-                throw new CertificateException(nspe.toString());
-            } catch (InvalidKeyException ike) {
-                throw new CertificateException(ike.toString());
-            } catch (SignatureException se) {
-                throw new CertificateException(se.toString());
-            }
+        if (chain == null || chain.length == 0) {
+            throw new CertificateException("empty certificate chain");
         }
-
-        // Step 2: verify that the root of the chain was issued by a trust anchor.
-        if (trusted == null || trusted.length == 0)
+        if (trusted == null || trusted.length == 0) {
             throw new CertificateException("no trust anchors");
+        }
 
+        for (int i = 0; i < chain.length; i++) {
+            if (chain[i] == null) {
+                throw new CertificateException("certificate chain contains null entry");
+            }
+            chain[i].checkValidity();
+        }
+
+        for (int i = 0; i < chain.length; i++) {
+            if (i + 1 < chain.length && isIssuedBy(chain[i], chain[i + 1])) {
+                verifyCertificate(chain[i], chain[i + 1]);
+            } else {
+                verifyTrustAnchor(chain[i]);
+            }
+        }
+    }
+
+    private void verifyTrustAnchor(X509Certificate certificate) throws CertificateException {
+        CertificateException lastFailure = null;
         for (int i = 0; i < trusted.length; i++) {
+            X509Certificate trustAnchor = trusted[i];
+            if (trustAnchor == null) {
+                continue;
+            }
             try {
-                trusted[i].checkValidity();
-                chain[chain.length - 1].verify(trusted[i].getPublicKey());
+                trustAnchor.checkValidity();
+                verifyCertificate(certificate, trustAnchor);
                 return;
-            } catch (Exception e) {
+            } catch (CertificateException e) {
+                lastFailure = e;
             }
         }
 
-        throw new CertificateException();
+        CertificateException failure = new CertificateException("certificate chain is not trusted");
+        if (lastFailure != null) {
+            failure.initCause(lastFailure);
+        }
+        throw failure;
+    }
+
+    private static boolean isIssuedBy(X509Certificate certificate, X509Certificate issuer) {
+        return certificate.getIssuerX500Principal().equals(issuer.getSubjectX500Principal());
+    }
+
+    private static void verifyCertificate(X509Certificate certificate, X509Certificate issuer)
+            throws CertificateException {
+        try {
+            certificate.verify(issuer.getPublicKey());
+        } catch (GeneralSecurityException e) {
+            throw new CertificateException("certificate signature verification failed", e);
+        }
     }
 }

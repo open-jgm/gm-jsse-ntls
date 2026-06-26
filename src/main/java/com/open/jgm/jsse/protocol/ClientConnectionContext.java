@@ -199,73 +199,10 @@ public class ClientConnectionContext extends ConnectionContext {
         socket.recordStream.write(rc);
         handshakes.add(hs);
 
-        // 计算 masterSecret
-        byte[] MASTER_SECRET = "master secret".getBytes();
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        os.write(securityParameters.clientRandom);
-        os.write(securityParameters.serverRandom);
-        byte[] seed = os.toByteArray();
-        try {
-            securityParameters.masterSecret = Crypto.prf(preMasterSecret, MASTER_SECRET, seed, preMasterSecret.length);
-        } catch (Exception ex) {
-            throw new SSLException("caculate master secret failed", ex);
-        }
-
-        // key_block = PRF(SecurityParameters.master_secret，"keyexpansion"，
-        // SecurityParameters.server_random +SecurityParameters.client_random);
-        // new TLSKeyMaterialSpec(masterSecret, TLSKeyMaterialSpec.KEY_EXPANSION,
-        // key_block.length, server_random, client_random))
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.write(securityParameters.serverRandom);
-        baos.write(securityParameters.clientRandom);
-        byte[] keyBlockSeed = baos.toByteArray();
-        byte[] keyBlock = null;
-        try {
-            keyBlock = Crypto.prf(securityParameters.masterSecret, "key expansion".getBytes(), keyBlockSeed, 128);
-        } catch (Exception e) {
-            throw new SSLException("caculate key block failed", e);
-        }
-
-        // client_write_MAC_secret[SecurityParameters.hash_size]
-        // server_write_MAC_secret[SecurityParameters.hash_size]
-        // client_write_key[SecurityParameters.key_material_length]
-        // server_write_key[SecurityParameters.key_material_length]
-        // clientWriteIV
-        // serverWriteIV
-
-        // client mac key
-        byte[] clientMacKey = new byte[32];
-        System.arraycopy(keyBlock, 0, clientMacKey, 0, 32);
-        socket.recordStream.setEncryptMacKey(clientMacKey);
-
-        // server mac key
-        byte[] serverMacKey = new byte[32];
-        System.arraycopy(keyBlock, 32, serverMacKey, 0, 32);
-        socket.recordStream.setDecryptMacKey(serverMacKey);
-
-        // client write key
-        byte[] clientWriteKey = new byte[16];
-        System.arraycopy(keyBlock, 64, clientWriteKey, 0, 16);
-        SM4Engine writeCipher = new SM4Engine();
-        writeCipher.init(true, new KeyParameter(clientWriteKey));
-        socket.recordStream.setWriteCipher(writeCipher);
-
-        // server write key
-        byte[] serverWriteKey = new byte[16];
-        System.arraycopy(keyBlock, 80, serverWriteKey, 0, 16);
-        SM4Engine readCipher = new SM4Engine();
-        readCipher.init(false, new KeyParameter(serverWriteKey));
-        socket.recordStream.setReadCipher(readCipher);
-
-        // client write iv
-        byte[] clientWriteIV = new byte[16];
-        System.arraycopy(keyBlock, 96, clientWriteIV, 0, 16);
-        socket.recordStream.setEncryptIV(clientWriteIV);
-
-        // server write iv
-        byte[] serverWriteIV = new byte[16];
-        System.arraycopy(keyBlock, 112, serverWriteIV, 0, 16);
-        socket.recordStream.setDecryptIV(serverWriteIV);
+        KeySchedule.Material material = KeySchedule.derive(preMasterSecret,
+                securityParameters.clientRandom, securityParameters.serverRandom);
+        securityParameters.masterSecret = material.getMasterSecret();
+        KeySchedule.applyClientWrite(socket.recordStream, material);
     }
 
     private void sendClientCertificate() throws IOException {
@@ -338,9 +275,16 @@ public class ClientConnectionContext extends ConnectionContext {
         }
         Handshake hsf = Handshake.read(new ByteArrayInputStream(rc.fragment));
         ServerHello sh = (ServerHello) hsf.body;
-        sh.getCompressionMethod();
-        // TODO: process the compresion method
-        session.cipherSuite = sh.getCipherSuite();
+        HandshakeNegotiator.Negotiated negotiated;
+        try {
+            negotiated = HandshakeNegotiator.validateServerHello(sslConfig.enabledProtocols,
+                    sslConfig.enabledCipherSuites, sh.getProtocolVersion(), sh.getCipherSuite(),
+                    sh.getCompressionMethod());
+        } catch (HandshakeNegotiator.NegotiationException ex) {
+            throw new AlertException(new Alert(Alert.Level.FATAL, ex.getDescription()), true);
+        }
+        session.cipherSuite = negotiated.getCipherSuite();
+        session.setProtocol(negotiated.getProtocolVersion());
         session.peerHost = socket.getPeerHost();
         session.peerPort = socket.getPort();
         session.sessionId = new GMSSLSession.ID(sh.getSessionId());
@@ -352,7 +296,7 @@ public class ClientConnectionContext extends ConnectionContext {
         byte[] sessionId = new byte[0];
         int gmtUnixTime = (int) (System.currentTimeMillis() / 1000L);
         ClientRandom random = new ClientRandom(gmtUnixTime, sslContext.getSecureRandom().generateSeed(28));
-        List<CipherSuite> suites = sslContext.getSupportedCipherSuites();
+        List<CipherSuite> suites = sslConfig.enabledCipherSuites;
         List<CompressionMethod> compressions = new ArrayList<CompressionMethod>(2);
         compressions.add(CompressionMethod.NULL);
         ProtocolVersion version = ProtocolVersion.NTLS_1_1;

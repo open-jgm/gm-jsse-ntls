@@ -41,7 +41,7 @@ public class GMSSLServerSocket extends SSLServerSocket {
 
     @Override
     public void setEnabledCipherSuites(String[] suites) {
-        sslConfig.enabledCipherSuites = CipherSuite.validValuesOf(suites);
+        sslConfig.setEnabledCipherSuites(CipherSuite.validValuesOf(suites));
     }
 
     @Override
@@ -51,7 +51,7 @@ public class GMSSLServerSocket extends SSLServerSocket {
 
     @Override
     public void setEnabledProtocols(String[] protocols) {
-        sslConfig.enabledProtocols = ProtocolVersion.namesOf(protocols);
+        sslConfig.setEnabledProtocols(ProtocolVersion.namesOf(protocols));
     }
 
     @Override

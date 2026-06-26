@@ -16,16 +16,16 @@ public class GMSSLServerSocketFactoryTest {
         Assert.assertArrayEquals(new String[]{"ECC-SM2-WITH-SM4-CBC-SM3"}, ssf.getDefaultCipherSuites());
         Assert.assertArrayEquals(new String[]{"ECC-SM2-WITH-SM4-CBC-SM3"}, ssf.getSupportedCipherSuites());
 
-        ServerSocket socket = ssf.createServerSocket(8080);
+        ServerSocket socket = ssf.createServerSocket(0);
         Assert.assertNotNull(socket);
         socket.close();
 
-        socket = ssf.createServerSocket(8080, 50);
+        socket = ssf.createServerSocket(0, 50);
         Assert.assertNotNull(socket);
         socket.close();
 
         InetAddress inet = InetAddress.getByName(null);
-        socket = ssf.createServerSocket(8080, 80, inet);
+        socket = ssf.createServerSocket(0, 80, inet);
         Assert.assertNotNull(socket);
         socket.close();
     }
